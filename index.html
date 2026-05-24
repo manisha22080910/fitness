@@ -1,0 +1,840 @@
+import { useState, useEffect, useMemo } from “react”;
+
+// ─── SCORING RULES ────────────────────────────────────────────────────────────
+
+const HUSBAND_GAINS = [
+{ id:“steps”,       label:“Steps ≥ 12,000”,      icon:“👟”, pts:8,  pass: r => +r.steps >= 12000,         display: r => r.steps ? `${(+r.steps).toLocaleString()} steps` : “—” },
+{ id:“water”,       label:“Water ≥ 4 litres”,     icon:“💧”, pts:8,  pass: r => +r.water_l >= 4,           display: r => r.water_l ? `${r.water_l}L` : “—” },
+{ id:“boiled”,      label:“Boiled Water Morning”,  icon:“☕”, pts:5,  pass: r => yn(r.boiled_water),        display: r => r.boiled_water || “—” },
+{ id:“protein”,     label:“Protein Shake”,         icon:“🥤”, pts:8,  pass: r => yn(r.protein_shake),       display: r => r.protein_shake || “—” },
+{ id:“gym”,         label:“Gym / Swim”,            icon:“🏋️”, pts:10, pass: r => yn(r.gym),                 display: r => r.gym || “—” },
+{ id:“calories”,    label:“Calories < 2,000 kcal”, icon:“🔥”, pts:8,  pass: r => +r.calories > 0 && +r.calories < 2000, display: r => r.calories ? `${r.calories} kcal` : “—” },
+{ id:“sleep”,       label:“Sleep ≥ 7 hours”,       icon:“😴”, pts:5,  pass: r => +r.sleep_hrs >= 7,         display: r => r.sleep_hrs ? `${r.sleep_hrs} hrs` : “—” },
+{ id:“no_market”,   label:“No Market Food”,        icon:“🚫”, pts:10, pass: r => r.market_food && !yn(r.market_food), display: r => r.market_food || “—” },
+];
+const HUSBAND_LOSSES = [
+{ id:“mkt_ate”,   label:“Ate Market Food”,     pts:-20, pass: r => yn(r.market_food) },
+{ id:“cal_over”,  label:“Calories > 2,000”,    pts:-15, pass: r => +r.calories >= 2000 },
+{ id:“bad_sleep”, label:“Sleep < 7 hours”,     pts:-10, pass: r => +r.sleep_hrs > 0 && +r.sleep_hrs < 7 },
+];
+
+const WIFE_GAINS = [
+{ id:“steps”,      label:“Steps 5,000–6,000”,   icon:“👟”, pts:8,  pass: r => +r.steps >= 5000 && +r.steps <= 6000, display: r => r.steps ? `${(+r.steps).toLocaleString()} steps` : “—” },
+{ id:“water”,      label:“Water ≥ 3 litres”,    icon:“💧”, pts:8,  pass: r => +r.water_l >= 3,            display: r => r.water_l ? `${r.water_l}L` : “—” },
+{ id:“boiled”,     label:“Boiled Water Morning”, icon:“☕”, pts:5,  pass: r => yn(r.boiled_water),         display: r => r.boiled_water || “—” },
+{ id:“protein”,    label:“Protein Shake”,        icon:“🥤”, pts:10, pass: r => yn(r.protein_shake),        display: r => r.protein_shake || “—” },
+{ id:“almonds”,    label:“Ate Almonds”,          icon:“🌰”, pts:8,  pass: r => yn(r.almonds),              display: r => r.almonds || “—” },
+{ id:“banana”,     label:“Banana Shake”,         icon:“🍌”, pts:8,  pass: r => yn(r.banana_shake),         display: r => r.banana_shake || “—” },
+{ id:“meal1”,      label:“Meal 1 — Breakfast”,   icon:“🍳”, pts:8,  pass: r => yn(r.meal1),                display: r => r.meal1 || “—” },
+{ id:“meal2”,      label:“Meal 2 — Lunch”,       icon:“🍱”, pts:8,  pass: r => yn(r.meal2),                display: r => r.meal2 || “—” },
+{ id:“meal3”,      label:“Meal 3 — Dinner”,      icon:“🍽️”, pts:8,  pass: r => yn(r.meal3),                display: r => r.meal3 || “—” },
+{ id:“gym”,        label:“Gym / Swim”,           icon:“🏊”, pts:10, pass: r => yn(r.gym),                  display: r => r.gym || “—” },
+{ id:“sleep”,      label:“Sleep ≥ 7 hours”,      icon:“😴”, pts:5,  pass: r => +r.sleep_hrs >= 7,          display: r => r.sleep_hrs ? `${r.sleep_hrs} hrs` : “—” },
+];
+const WIFE_LOSSES = [
+{ id:“no_protein”, label:“Skipped Protein Shake”, pts:-15, pass: r => r.protein_shake && !yn(r.protein_shake) },
+{ id:“no_meal1”,   label:“Skipped Breakfast”,     pts:-10, pass: r => r.meal1 && !yn(r.meal1) },
+{ id:“no_meal2”,   label:“Skipped Lunch”,         pts:-10, pass: r => r.meal2 && !yn(r.meal2) },
+{ id:“no_meal3”,   label:“Skipped Dinner”,        pts:-10, pass: r => r.meal3 && !yn(r.meal3) },
+{ id:“bad_sleep”,  label:“Sleep < 7 hours”,       pts:-10, pass: r => +r.sleep_hrs > 0 && +r.sleep_hrs < 7 },
+];
+
+const SHARED_HABITS = [
+{ id:“read_book”,        label:“Read 15 Pages”,          icon:“📖”, pts:8 },
+{ id:“created_reel”,     label:“Created a Reel”,         icon:“🎬”, pts:8 },
+{ id:“learned_skill”,    label:“Learned a Skill (30m)”,  icon:“🧠”, pts:8 },
+{ id:“no_phone_morning”, label:“No Phone First 30 Mins”, icon:“📵”, pts:6 },
+{ id:“skincare”,         label:“Skincare / Cold Wash”,   icon:“💆”, pts:5 },
+];
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+
+const yn = v => (v || “”).toString().trim().toLowerCase() === “yes”;
+
+function calcScore(row, gains, losses) {
+if (!row) return 0;
+let s = 0;
+gains.forEach(r => { if (r.pass(row)) s += r.pts; });
+losses.forEach(r => { if (r.pass(row)) s += r.pts; });
+SHARED_HABITS.forEach(h => { if (yn(row[h.id])) s += h.pts; });
+return s;
+}
+
+const MAX_H = HUSBAND_GAINS.reduce((s,r)=>s+r.pts,0) + SHARED_HABITS.reduce((s,r)=>s+r.pts,0);
+const MAX_W = WIFE_GAINS.reduce((s,r)=>s+r.pts,0) + SHARED_HABITS.reduce((s,r)=>s+r.pts,0);
+
+function scoreLabel(pct) {
+if (pct >= 0.9) return { label: “LEGENDARY”, emoji: “🏆” };
+if (pct >= 0.7) return { label: “CRUSHING IT”, emoji: “⚡” };
+if (pct >= 0.5) return { label: “SOLID”, emoji: “💪” };
+if (pct >= 0.3) return { label: “GETTING THERE”, emoji: “🌱” };
+return { label: “JUST STARTING”, emoji: “🚀” };
+}
+
+function parseDate(str) {
+if (!str) return 0;
+if (str.includes(”/”)) {
+const [d,m,y] = str.split(”/”);
+return new Date(+y, +m-1, +d).getTime();
+}
+return new Date(str).getTime();
+}
+
+function fmtDisplay(str) {
+if (!str) return “— SELECT DATE —”;
+const d = new Date(parseDate(str));
+return d.toLocaleDateString(“en-GB”, { weekday:“long”, day:“numeric”, month:“long”, year:“numeric” });
+}
+
+function fmtShort(str) {
+if (!str) return “”;
+const d = new Date(parseDate(str));
+return d.toLocaleDateString(“en-GB”, { month:“short”, day:“numeric” });
+}
+
+function fmtDay(str) {
+if (!str) return “”;
+const d = new Date(parseDate(str));
+return d.toLocaleDateString(“en-GB”, { weekday:“short” });
+}
+
+function parseCSV(text) {
+const lines = text.trim().split(”\n”).filter(l => l.trim());
+if (lines.length < 2) return [];
+const headers = lines[0].split(”,”).map(h => h.trim().toLowerCase().replace(/\s+/g,”*”).replace(/[^a-z0-9*]/g,””));
+return lines.slice(1).map(line => {
+const vals = [];
+let cur = “”, inQ = false;
+for (let c of line) {
+if (c === ‘”’) inQ = !inQ;
+else if (c === “,” && !inQ) { vals.push(cur.trim()); cur = “”; }
+else cur += c;
+}
+vals.push(cur.trim());
+const obj = {};
+headers.forEach((h,i) => obj[h] = (vals[i]||””).replace(/^”|”$/g,””).trim());
+return obj;
+}).filter(r => r.date && r.date.trim());
+}
+
+function calcStreak(data, gains, losses) {
+if (!data.length) return 0;
+let streak = 0;
+const today = new Date(); today.setHours(0,0,0,0);
+for (let i = data.length-1; i >= 0; i–) {
+const d = new Date(parseDate(data[i].date)); d.setHours(0,0,0,0);
+const diff = Math.round((today - d) / 86400000);
+if (diff === streak) streak++;
+else break;
+}
+return streak;
+}
+
+function avg7(data, key) {
+const last7 = data.slice(-7).filter(r => +r[key] > 0);
+if (!last7.length) return 0;
+return +(last7.reduce((s,r) => s + +r[key], 0) / last7.length).toFixed(1);
+}
+
+function loadStoredData() {
+try { return JSON.parse(localStorage.getItem(“fitfam_demo”) || “null”); } catch { return null; }
+}
+
+// ─── DEMO DATA ────────────────────────────────────────────────────────────────
+
+function buildDemo() {
+const hRows = [], wRows = [];
+const today = new Date();
+for (let i = 29; i >= 0; i–) {
+const d = new Date(today); d.setDate(d.getDate() - i);
+const dateStr = `${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}/${d.getFullYear()}`;
+const rnd = () => Math.random() > 0.35 ? “Yes” : “No”;
+hRows.push({
+date: dateStr,
+steps: String(9000 + Math.floor(Math.random()*5000)),
+water_l: (3 + Math.random()*1.5).toFixed(1),
+boiled_water: rnd(), gym: rnd(), protein_shake: rnd(),
+market_food: Math.random() > 0.75 ? “Yes” : “No”,
+calories: String(1500 + Math.floor(Math.random()*700)),
+sleep_hrs: (6.5 + Math.random()*1.5).toFixed(1),
+weight: (85 - i*0.08 + (Math.random()-0.5)*0.3).toFixed(1),
+read_book: rnd(), created_reel: rnd(), learned_skill: rnd(),
+no_phone_morning: rnd(), skincare: rnd(), notes: “”,
+});
+wRows.push({
+date: dateStr,
+steps: String(4800 + Math.floor(Math.random()*1800)),
+water_l: (2.5 + Math.random()*1.2).toFixed(1),
+boiled_water: rnd(), gym: rnd(), protein_shake: rnd(),
+almonds: rnd(), banana_shake: rnd(),
+meal1: rnd(), meal2: rnd(), meal3: rnd(),
+calories: String(2000 + Math.floor(Math.random()*600)),
+sleep_hrs: (6.5 + Math.random()*1.5).toFixed(1),
+weight: (43 + i*0.06 + (Math.random()-0.5)*0.2).toFixed(1),
+read_book: rnd(), created_reel: rnd(), learned_skill: rnd(),
+no_phone_morning: rnd(), skincare: rnd(), notes: “”,
+});
+}
+return { hRows, wRows };
+}
+
+// ─── COMPONENTS ───────────────────────────────────────────────────────────────
+
+const PEOPLE = {
+husband: { label:“ANUJ”,    color:”#ff5e1a”, soft:“rgba(255,94,26,0.12)”,  glow:“rgba(255,94,26,0.25)”,  max: MAX_H, gains: HUSBAND_GAINS, losses: HUSBAND_LOSSES },
+wife:    { label:“MANISHA”, color:”#b347f5”, soft:“rgba(179,71,245,0.12)”, glow:“rgba(179,71,245,0.25)”, max: MAX_W, gains: WIFE_GAINS,    losses: WIFE_LOSSES    },
+};
+
+function Ring({ pct, color, score, max, size=100 }) {
+const r = size*0.40, circ = 2*Math.PI*r;
+return (
+<svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+<circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={size*0.08}/>
+<circle cx={size/2} cy={size/2} r={r} fill=“none” stroke={color} strokeWidth={size*0.08}
+strokeLinecap=“round” strokeDasharray={circ}
+strokeDashoffset={circ*(1-Math.max(0,Math.min(1,pct)))}
+transform={`rotate(-90 ${size/2} ${size/2})`}
+style={{transition:“stroke-dashoffset 1s cubic-bezier(0.34,1.56,0.64,1)”, filter:`drop-shadow(0 0 8px ${color})`}}
+/>
+<text x={size/2} y={size/2-4} textAnchor="middle" fill="#fff" fontSize={size*0.2} fontWeight="800" fontFamily="'Bebas Neue',sans-serif" letterSpacing="1">{score}</text>
+<text x={size/2} y={size/2+size*0.14} textAnchor="middle" fill="rgba(255,255,255,0.35)" fontSize={size*0.09} fontFamily="'DM Mono',monospace">/{max} pts</text>
+</svg>
+);
+}
+
+function CheckRow({ icon, label, display, passed, pts }) {
+return (
+<div style={{
+display:“flex”, alignItems:“center”, gap:8, padding:“8px 10px”,
+borderRadius:6, border:`1px solid ${passed ? "rgba(57,217,138,0.3)" : "rgba(255,77,109,0.25)"}`,
+background: passed ? “rgba(57,217,138,0.05)” : “rgba(255,77,109,0.04)”,
+fontSize:12,
+}}>
+<span style={{fontSize:13,width:20,textAlign:“center”,flexShrink:0}}>{icon}</span>
+<span style={{flex:1,color:passed?”#e8e8f8”:“rgba(232,232,248,0.55)”}}>{label}</span>
+{display && <span style={{fontSize:10,color:“rgba(255,255,255,0.3)”,marginRight:4}}>{display}</span>}
+<span style={{
+fontSize:10, fontWeight:700, padding:“2px 6px”, borderRadius:3, flexShrink:0,
+background: passed ? “rgba(57,217,138,0.15)” : “rgba(255,77,109,0.15)”,
+color: passed ? “#39d98a” : “#ff4d6d”,
+}}>{passed ? `+${pts}` : pts}</span>
+</div>
+);
+}
+
+function PersonCard({ who, row }) {
+const p = PEOPLE[who];
+const score = calcScore(row, p.gains, p.losses);
+const pct = score / p.max;
+const { label, emoji } = scoreLabel(Math.max(0, pct));
+
+if (!row) return (
+<div style={{flex:“1 1 300px”,borderRadius:2,background:“var(–surface)”,border:“1px solid var(–border)”,boxShadow:`0 0 60px ${p.soft}`,overflow:“hidden”}}>
+<div style={{height:3,background:p.color}}/>
+<div style={{padding:“24px”,textAlign:“center”,color:“rgba(255,255,255,0.3)”,fontSize:12}}>No data for this date</div>
+</div>
+);
+
+const wt = row.weight || “—”;
+const sl = row.sleep_hrs || “—”;
+const cal = row.calories || “—”;
+const stepsTarget = who===“husband” ? 12000 : 6000;
+const waterTarget = who===“husband” ? 4 : 3;
+const stepsPct = Math.min(100, (+row.steps / stepsTarget)*100);
+const waterPct = Math.min(100, (+row.water_l / waterTarget)*100);
+
+return (
+<div style={{flex:“1 1 300px”,borderRadius:2,background:“var(–surface)”,border:`1px solid rgba(255,255,255,0.07)`,boxShadow:`0 0 60px ${p.soft}`,overflow:“hidden”,display:“flex”,flexDirection:“column”}}>
+<div style={{height:3,background:`linear-gradient(90deg,${p.color},${who==="husband"?"#ff9500":"#e040fb"})`}}/>
+<div style={{padding:“20px 18px”,flex:1,display:“flex”,flexDirection:“column”,gap:14}}>
+
+```
+    {/* Top row */}
+    <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between"}}>
+      <div>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:32,letterSpacing:4,color:p.color,lineHeight:1}}>{p.label}</div>
+        <div style={{fontSize:10,letterSpacing:3,color:"rgba(255,255,255,0.35)",textTransform:"uppercase",marginTop:4}}>{emoji} {label}</div>
+      </div>
+      <Ring pct={Math.max(0,pct)} color={p.color} score={score} max={p.max} size={88}/>
+    </div>
+
+    {/* Stats row */}
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6}}>
+      {[{lbl:"Weight",val:`${wt} kg`},{lbl:"Sleep",val:`${sl} hrs`},{lbl:"Calories",val:`${cal} kcal`}].map(s=>(
+        <div key={s.lbl} style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.06)",padding:"8px 6px",textAlign:"center",borderRadius:4}}>
+          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,letterSpacing:1,color:p.color}}>{s.val}</div>
+          <div style={{fontSize:9,color:"rgba(255,255,255,0.3)",textTransform:"uppercase",letterSpacing:2}}>{s.lbl}</div>
+        </div>
+      ))}
+    </div>
+
+    {/* Progress bars */}
+    <div style={{display:"flex",flexDirection:"column",gap:8}}>
+      {[{lbl:"Steps",pct:stepsPct,cur:(+row.steps||0).toLocaleString(),tgt:stepsTarget.toLocaleString()},
+        {lbl:"Water",pct:waterPct,cur:`${row.water_l||0}L`,tgt:`${waterTarget}L`}].map(b=>(
+        <div key={b.lbl}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"rgba(255,255,255,0.3)",marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>
+            <span>{b.lbl}</span><span>{b.cur} / {b.tgt}</span>
+          </div>
+          <div style={{height:3,background:"rgba(255,255,255,0.07)",borderRadius:99}}>
+            <div style={{height:"100%",width:`${b.pct}%`,background:`linear-gradient(90deg,${p.color},${who==="husband"?"#ff9500":"#e040fb"})`,borderRadius:99,transition:"width 0.8s ease"}}/>
+          </div>
+        </div>
+      ))}
+    </div>
+
+    {/* Health checklist */}
+    <div>
+      <div style={{fontSize:9,letterSpacing:3,color:"rgba(255,255,255,0.25)",textTransform:"uppercase",marginBottom:6,paddingBottom:4,borderBottom:"1px solid rgba(255,255,255,0.06)"}}>Health Tasks</div>
+      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+        {p.gains.map(rule=>(
+          <CheckRow key={rule.id} icon={rule.icon} label={rule.label} display={rule.display(row)} passed={rule.pass(row)} pts={rule.pts}/>
+        ))}
+        {p.losses.filter(rule=>rule.pass(row)).map(rule=>(
+          <div key={rule.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:6,border:"1px solid rgba(255,77,109,0.3)",background:"rgba(255,77,109,0.06)",fontSize:12}}>
+            <span style={{fontSize:13,width:20,textAlign:"center"}}>⚠️</span>
+            <span style={{flex:1,color:"#ff4d6d"}}>{rule.label}</span>
+            <span style={{fontSize:10,fontWeight:700,padding:"2px 6px",borderRadius:3,background:"rgba(255,77,109,0.15)",color:"#ff4d6d"}}>{rule.pts}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+
+    {/* Shared habits */}
+    <div>
+      <div style={{fontSize:9,letterSpacing:3,color:"rgba(255,255,255,0.25)",textTransform:"uppercase",marginBottom:6,paddingBottom:4,borderBottom:"1px solid rgba(255,255,255,0.06)"}}>Extras (Both)</div>
+      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+        {SHARED_HABITS.map(h=>(
+          <CheckRow key={h.id} icon={h.icon} label={h.label} display={row[h.id]||"—"} passed={yn(row[h.id])} pts={h.pts}/>
+        ))}
+      </div>
+    </div>
+
+  </div>
+</div>
+```
+
+);
+}
+
+// ─── COMPARISON TAB ───────────────────────────────────────────────────────────
+
+function ComparisonTab({ hData, wData, allDates, currentDate }) {
+const hRow = hData.find(r=>r.date===currentDate)||null;
+const wRow = wData.find(r=>r.date===currentDate)||null;
+const hScore = calcScore(hRow, HUSBAND_GAINS, HUSBAND_LOSSES);
+const wScore = calcScore(wRow, WIFE_GAINS, WIFE_LOSSES);
+const total = hScore + wScore || 1;
+const hStreak = calcStreak(hData, HUSBAND_GAINS, HUSBAND_LOSSES);
+const wStreak = calcStreak(wData, WIFE_GAINS, WIFE_LOSSES);
+
+const weekDates = allDates.slice(-7);
+let hWins=0, wWins=0, draws=0;
+weekDates.forEach(k=>{
+const hs = calcScore(hData.find(r=>r.date===k)||null, HUSBAND_GAINS, HUSBAND_LOSSES);
+const ws = calcScore(wData.find(r=>r.date===k)||null, WIFE_GAINS, WIFE_LOSSES);
+if (hs>ws) hWins++; else if (ws>hs) wWins++; else if(hs>0) draws++;
+});
+
+const allHabits = [
+…HUSBAND_GAINS.map(h=>({id:h.id,label:h.label,icon:h.icon,hPass:hRow?h.pass(hRow):null,wPass:null,wOnlyField:false})),
+];
+const sharedIds = new Set(SHARED_HABITS.map(h=>h.id));
+const wOnlyIds = new Set(WIFE_GAINS.filter(h=>!HUSBAND_GAINS.find(hh=>hh.id===h.id)).map(h=>h.id));
+
+const OH=”#ff5e1a”, OW=”#b347f5”;
+
+return (
+<div style={{display:“flex”,flexDirection:“column”,gap:20}}>
+
+```
+  {/* Battle bar */}
+  <div style={{background:"var(--surface)",border:"1px solid var(--border)",padding:"20px 18px"}}>
+    <div style={{fontSize:9,letterSpacing:4,color:"rgba(255,255,255,0.3)",textAlign:"center",marginBottom:16,textTransform:"uppercase"}}>Today's Battle</div>
+    <div style={{display:"flex",alignItems:"center",gap:12}}>
+      <div style={{flex:1,textAlign:"center"}}>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:42,color:OH,lineHeight:1,letterSpacing:2}}>{hScore}</div>
+        <div style={{fontSize:9,color:OH,letterSpacing:3,textTransform:"uppercase"}}>Anuj</div>
+      </div>
+      <div style={{flex:2}}>
+        <div style={{height:14,borderRadius:0,background:"rgba(255,255,255,0.05)",overflow:"hidden",display:"flex"}}>
+          <div style={{width:`${(hScore/total)*100}%`,background:`linear-gradient(90deg,${OH},#ff9500)`,transition:"width 0.8s"}}/>
+          <div style={{flex:1,background:`linear-gradient(90deg,${OW},#e040fb)`,transition:"width 0.8s"}}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:5,fontSize:9,color:"rgba(255,255,255,0.25)"}}>
+          <span>{Math.round((hScore/total)*100)}%</span><span style={{color:"rgba(255,255,255,0.15)"}}>VS</span><span>{Math.round((wScore/total)*100)}%</span>
+        </div>
+      </div>
+      <div style={{flex:1,textAlign:"center"}}>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:42,color:OW,lineHeight:1,letterSpacing:2}}>{wScore}</div>
+        <div style={{fontSize:9,color:OW,letterSpacing:3,textTransform:"uppercase"}}>Manisha</div>
+      </div>
+    </div>
+    {hScore!==wScore&&<div style={{textAlign:"center",marginTop:12,fontSize:13,fontWeight:700,color:hScore>wScore?OH:OW,letterSpacing:1}}>🏆 {hScore>wScore?"Anuj":"Manisha"} leads today!</div>}
+  </div>
+
+  {/* Stats */}
+  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+    {[
+      {lbl:"Streak",hv:`${hStreak}d`,wv:`${wStreak}d`,winner:hStreak>wStreak?"h":wStreak>hStreak?"w":null},
+      {lbl:"Week Wins",hv:String(hWins),wv:String(wWins),winner:hWins>wWins?"h":wWins>hWins?"w":null},
+      {lbl:"Draws",hv:String(draws),wv:"this week",winner:null,single:true},
+    ].map(s=>(
+      <div key={s.lbl} style={{background:"var(--surface)",border:"1px solid var(--border)",padding:"14px 10px",textAlign:"center"}}>
+        <div style={{fontSize:9,color:"rgba(255,255,255,0.3)",letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>{s.lbl}</div>
+        {s.single
+          ? <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:26,color:"#ffd166",letterSpacing:2}}>{s.hv}<div style={{fontSize:9,color:"rgba(255,255,255,0.25)",fontFamily:"'DM Mono',monospace"}}>{s.wv}</div></div>
+          : <div style={{display:"flex",justifyContent:"center",alignItems:"baseline",gap:8}}>
+              <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:28,color:s.winner==="h"?OH:"rgba(255,255,255,0.3)",letterSpacing:2}}>{s.hv}</span>
+              <span style={{fontSize:10,color:"rgba(255,255,255,0.15)"}}>–</span>
+              <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:28,color:s.winner==="w"?OW:"rgba(255,255,255,0.3)",letterSpacing:2}}>{s.wv}</span>
+            </div>
+        }
+      </div>
+    ))}
+  </div>
+
+  {/* Habit comparison */}
+  <div style={{background:"var(--surface)",border:"1px solid var(--border)",padding:"18px"}}>
+    <div style={{fontSize:9,letterSpacing:3,color:"rgba(255,255,255,0.3)",textTransform:"uppercase",marginBottom:14}}>Shared Habits — Today</div>
+    <div style={{display:"flex",justifyContent:"space-between",marginBottom:10,fontSize:9,color:"rgba(255,255,255,0.2)"}}>
+      <span style={{color:OH,fontWeight:700}}>● Anuj</span>
+      <span style={{color:OW,fontWeight:700}}>Manisha ●</span>
+    </div>
+    <div style={{display:"flex",flexDirection:"column",gap:5}}>
+      {SHARED_HABITS.map(h=>{
+        const hd = hRow ? yn(hRow[h.id]) : null;
+        const wd = wRow ? yn(wRow[h.id]) : null;
+        return (
+          <div key={h.id} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 0",borderBottom:"1px solid rgba(255,255,255,0.04)"}}>
+            <div style={{width:20,height:20,borderRadius:4,background:hd?OH:"rgba(255,255,255,0.06)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#fff",flexShrink:0}}>{hd?"✓":""}</div>
+            <span style={{fontSize:14}}>{h.icon}</span>
+            <span style={{flex:1,fontSize:12,color:"rgba(255,255,255,0.6)"}}>{h.label}</span>
+            <div style={{width:20,height:20,borderRadius:4,background:wd?OW:"rgba(255,255,255,0.06)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#fff",flexShrink:0}}>{wd?"✓":""}</div>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+
+  {/* Weekly bar chart */}
+  <div style={{background:"var(--surface)",border:"1px solid var(--border)",padding:"18px"}}>
+    <div style={{fontSize:9,letterSpacing:3,color:"rgba(255,255,255,0.3)",textTransform:"uppercase",marginBottom:16}}>This Week — Side by Side</div>
+    <div style={{display:"flex",gap:6,alignItems:"flex-end",height:90}}>
+      {weekDates.map((k,i)=>{
+        const hs=calcScore(hData.find(r=>r.date===k)||null,HUSBAND_GAINS,HUSBAND_LOSSES);
+        const ws=calcScore(wData.find(r=>r.date===k)||null,WIFE_GAINS,WIFE_LOSSES);
+        const isToday=k===currentDate;
+        const hPct=Math.min(1,hs/MAX_H), wPct=Math.min(1,ws/MAX_W);
+        const maxBar=75;
+        return (
+          <div key={k} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+            <div style={{width:"100%",display:"flex",gap:2,alignItems:"flex-end",height:maxBar}}>
+              <div style={{flex:1,height:Math.max(3,hPct*maxBar),background:OH,borderRadius:"2px 2px 0 0",transition:"height 0.5s",filter:isToday?`drop-shadow(0 0 6px ${OH})`:"none"}}/>
+              <div style={{flex:1,height:Math.max(3,wPct*maxBar),background:OW,borderRadius:"2px 2px 0 0",transition:"height 0.5s",filter:isToday?`drop-shadow(0 0 6px ${OW})`:"none"}}/>
+            </div>
+            <div style={{fontSize:9,color:isToday?"#fff":"rgba(255,255,255,0.25)",fontWeight:isToday?700:400}}>
+              {["M","T","W","T","F","S","S"][i]}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+    <div style={{display:"flex",gap:16,marginTop:10}}>
+      {[{c:OH,l:"Anuj"},{c:OW,l:"Manisha"}].map(leg=>(
+        <div key={leg.l} style={{display:"flex",alignItems:"center",gap:6}}>
+          <div style={{width:16,height:3,background:leg.c,borderRadius:2}}/>
+          <span style={{fontSize:10,color:"rgba(255,255,255,0.35)"}}>{leg.l}</span>
+        </div>
+      ))}
+    </div>
+  </div>
+</div>
+```
+
+);
+}
+
+// ─── GROWTH TAB ───────────────────────────────────────────────────────────────
+
+function GrowthTab({ hData, wData, allDates }) {
+const [range, setRange] = useState(30);
+const [metric, setMetric] = useState(“score”);
+
+const days = useMemo(()=>allDates.slice(-range),[allDates,range]);
+const OH=”#ff5e1a”, OW=”#b347f5”;
+
+function getVal(data, key, gains, losses, date) {
+const row = data.find(r=>r.date===date)||null;
+if (!row) return null;
+switch(key) {
+case “score”:    return calcScore(row,gains,losses);
+case “pct”:      return Math.round(calcScore(row,gains,losses)/( gains===HUSBAND_GAINS?MAX_H:MAX_W)*100);
+case “steps”:    return +row.steps||null;
+case “water”:    return +row.water_l||null;
+case “calories”: return +row.calories||null;
+case “sleep”:    return +row.sleep_hrs||null;
+case “weight”:   return +row.weight||null;
+default:         return null;
+}
+}
+
+const hVals = days.map(d=>getVal(hData,“score”,HUSBAND_GAINS,HUSBAND_LOSSES,d));
+const wVals = days.map(d=>getVal(wData,“score”,WIFE_GAINS,WIFE_LOSSES,d));
+const hPct  = days.map(d=>getVal(hData,“pct”,HUSBAND_GAINS,HUSBAND_LOSSES,d));
+const wPct  = days.map(d=>getVal(wData,“pct”,WIFE_GAINS,WIFE_LOSSES,d));
+
+function buildPath(vals, innerW, innerH, padL, padT, minV, maxV) {
+return vals.map((v,i)=>{
+if (v===null) return null;
+const x = padL + (days.length>1 ? (i/(days.length-1)) : 0.5)*innerW;
+const y = padT + innerH - ((v-minV)/(maxV-minV||1))*innerH;
+return {x,y};
+});
+}
+
+function SVGChart({ hV, wV, yLabel, hColor, wColor, hName, wName }) {
+const W=600,H=160,pad={t:16,b:28,l:38,r:10};
+const innerW=W-pad.l-pad.r, innerH=H-pad.t-pad.b;
+const allV=[…hV,…wV].filter(v=>v!==null);
+if (!allV.length) return <div style={{textAlign:“center”,color:“rgba(255,255,255,0.2)”,fontSize:12,padding:20}}>No data</div>;
+const minV=Math.min(…allV)*0.92, maxV=Math.max(…allV)*1.05;
+const hPts=buildPath(hV,innerW,innerH,pad.l,pad.t,minV,maxV);
+const wPts=buildPath(wV,innerW,innerH,pad.l,pad.t,minV,maxV);
+const makePath=(pts)=>{
+const valid=pts.filter(Boolean);
+if(!valid.length) return “”;
+return valid.map((p,i)=>`${i===0?"M":"L"}${p.x},${p.y}`).join(” “);
+};
+const labelStep=days.length<=7?1:days.length<=14?2:days.length<=30?5:10;
+return (
+<svg width=“100%” viewBox={`0 0 ${W} ${H}`} style={{minWidth:280}}>
+<defs>
+<linearGradient id={`gh${hName}`} x1=“0” y1=“0” x2=“1” y2=“0”><stop offset="0%" stopColor={hColor}/><stop offset=“100%” stopColor={hColor===”#ff5e1a”?”#ff9500”:”#e040fb”}/></linearGradient>
+<linearGradient id={`gw${wName}`} x1=“0” y1=“0” x2=“1” y2=“0”><stop offset="0%" stopColor={wColor}/><stop offset=“100%” stopColor={wColor===”#b347f5”?”#e040fb”:”#ff9500”}/></linearGradient>
+</defs>
+{[0,0.25,0.5,0.75,1].map(t=>(
+<g key={t}>
+<line x1={pad.l} y1={pad.t+t*innerH} x2={pad.l+innerW} y2={pad.t+t*innerH} stroke="rgba(255,255,255,0.04)" strokeWidth="1"/>
+<text x={pad.l-4} y={pad.t+t*innerH+4} textAnchor="end" fill="rgba(255,255,255,0.2)" fontSize="8" fontFamily="'DM Mono',monospace">{Math.round(maxV-t*(maxV-minV))}</text>
+</g>
+))}
+{days.map((k,i)=>i%labelStep===0&&(
+<text key={k} x={pad.l+(days.length>1?(i/(days.length-1)):0.5)*innerW} y={H-6} textAnchor=“middle” fill=“rgba(255,255,255,0.2)” fontSize=“7” fontFamily=”‘DM Mono’,monospace”>{fmtShort(k)}</text>
+))}
+<path d={makePath(hPts)} fill=“none” stroke={`url(#gh${hName})`} strokeWidth=“2” strokeLinejoin=“round” strokeLinecap=“round” style={{filter:`drop-shadow(0 0 4px ${hColor})`}}/>
+<path d={makePath(wPts)} fill=“none” stroke={`url(#gw${wName})`} strokeWidth=“2” strokeLinejoin=“round” strokeLinecap=“round” style={{filter:`drop-shadow(0 0 4px ${wColor})`}}/>
+{hPts.map((p,i)=>p&&<circle key={`h${i}`} cx={p.x} cy={p.y} r=“2.5” fill={hColor}/>)}
+{wPts.map((p,i)=>p&&<circle key={`w${i}`} cx={p.x} cy={p.y} r=“2.5” fill={wColor}/>)}
+</svg>
+);
+}
+
+const hTotalScore = hData.reduce((s,r)=>s+calcScore(r,HUSBAND_GAINS,HUSBAND_LOSSES),0);
+const wTotalScore = wData.reduce((s,r)=>s+calcScore(r,WIFE_GAINS,WIFE_LOSSES),0);
+const maxLB = Math.max(hTotalScore,wTotalScore)||1;
+
+return (
+<div style={{display:“flex”,flexDirection:“column”,gap:20}}>
+
+```
+  {/* Range */}
+  <div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap"}}>
+    {[{v:7,l:"1W"},{v:14,l:"2W"},{v:30,l:"1M"},{v:60,l:"2M"},{v:90,l:"3M"}].map(r=>(
+      <button key={r.v} onClick={()=>setRange(r.v)} style={{
+        padding:"7px 16px",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"'DM Mono',monospace",
+        border:`1px solid ${range===r.v?"#ff5e1a":"rgba(255,255,255,0.12)"}`,
+        background:range===r.v?"rgba(255,94,26,0.12)":"rgba(255,255,255,0.03)",
+        color:range===r.v?"#ff5e1a":"rgba(255,255,255,0.4)",transition:"all 0.18s",
+      }}>{r.l}</button>
+    ))}
+  </div>
+
+  {/* Points chart */}
+  <div style={{background:"var(--surface)",border:"1px solid var(--border)",padding:"18px",overflowX:"auto"}}>
+    <div style={{fontSize:9,letterSpacing:3,color:"rgba(255,255,255,0.3)",textTransform:"uppercase",marginBottom:14}}>Points Over Time</div>
+    <SVGChart hV={hVals} wV={wVals} hColor={OH} wColor={OW} hName="hPts" wName="wPts"/>
+    <div style={{display:"flex",gap:16,marginTop:10}}>
+      {[{c:OH,l:"Anuj"},{c:OW,l:"Manisha"}].map(leg=>(
+        <div key={leg.l} style={{display:"flex",alignItems:"center",gap:6}}>
+          <div style={{width:16,height:3,background:leg.c,borderRadius:2}}/>
+          <span style={{fontSize:10,color:"rgba(255,255,255,0.35)"}}>{leg.l}</span>
+        </div>
+      ))}
+    </div>
+  </div>
+
+  {/* Completion % chart */}
+  <div style={{background:"var(--surface)",border:"1px solid var(--border)",padding:"18px",overflowX:"auto"}}>
+    <div style={{fontSize:9,letterSpacing:3,color:"rgba(255,255,255,0.3)",textTransform:"uppercase",marginBottom:14}}>Habit Completion % Trend</div>
+    <SVGChart hV={hPct} wV={wPct} hColor="#39d98a" wColor="#ffd166" hName="hPct2" wName="wPct2"/>
+    <div style={{display:"flex",gap:16,marginTop:10}}>
+      {[{c:"#39d98a",l:"Anuj %"},{c:"#ffd166",l:"Manisha %"}].map(leg=>(
+        <div key={leg.l} style={{display:"flex",alignItems:"center",gap:6}}>
+          <div style={{width:16,height:3,background:leg.c,borderRadius:2}}/>
+          <span style={{fontSize:10,color:"rgba(255,255,255,0.35)"}}>{leg.l}</span>
+        </div>
+      ))}
+    </div>
+  </div>
+
+  {/* Leaderboard */}
+  <div style={{background:"var(--surface)",border:"1px solid var(--border)",padding:"18px"}}>
+    <div style={{fontSize:9,letterSpacing:3,color:"rgba(255,255,255,0.3)",textTransform:"uppercase",marginBottom:14}}>All-Time Leaderboard</div>
+    {[
+      {label:"ANUJ",color:OH,total:hTotalScore,streak:calcStreak(hData,HUSBAND_GAINS,HUSBAND_LOSSES),days:hData.length},
+      {label:"MANISHA",color:OW,total:wTotalScore,streak:calcStreak(wData,WIFE_GAINS,WIFE_LOSSES),days:wData.length},
+    ].sort((a,b)=>b.total-a.total).map((p,i)=>(
+      <div key={p.label} style={{display:"flex",alignItems:"center",gap:12,padding:"14px 0",borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:36,color:i===0?"#ffd166":"rgba(255,255,255,0.2)",width:36,textAlign:"center",flexShrink:0}}>{i+1}</div>
+        <div style={{flex:1}}>
+          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:22,color:p.color,letterSpacing:3}}>{p.label}</div>
+          <div style={{fontSize:10,color:"rgba(255,255,255,0.3)",marginTop:2}}>🔥 {p.streak} day streak · {p.days} days logged</div>
+          <div style={{height:2,background:"rgba(255,255,255,0.06)",marginTop:8}}>
+            <div style={{height:"100%",width:`${Math.round((p.total/maxLB)*100)}%`,background:`linear-gradient(90deg,${p.color},${p.color==="#ff5e1a"?"#ff9500":"#e040fb"})`,transition:"width 1s ease"}}/>
+          </div>
+        </div>
+        <div style={{textAlign:"right",flexShrink:0}}>
+          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:32,color:p.color,letterSpacing:2}}>{p.total}</div>
+          <div style={{fontSize:9,color:"rgba(255,255,255,0.25)",textTransform:"uppercase",letterSpacing:2}}>total pts</div>
+        </div>
+      </div>
+    ))}
+  </div>
+
+  {/* Summary stats */}
+  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+    {[{who:"husband",data:hData,gains:HUSBAND_GAINS,losses:HUSBAND_LOSSES,max:MAX_H,color:OH,label:"ANUJ"},
+      {who:"wife",data:wData,gains:WIFE_GAINS,losses:WIFE_LOSSES,max:MAX_W,color:OW,label:"MANISHA"}].map(p=>{
+      const subset = p.data.filter(r=>days.includes(r.date));
+      const scores = subset.map(r=>calcScore(r,p.gains,p.losses));
+      const avgPts = scores.length ? (scores.reduce((a,b)=>a+b,0)/scores.length).toFixed(1) : "—";
+      const bestPts = scores.length ? Math.max(...scores) : "—";
+      const avgPct = scores.length ? Math.round(scores.reduce((a,b)=>a+b,0)/scores.length/p.max*100) : "—";
+      return (
+        <div key={p.who} style={{background:"var(--surface)",border:`1px solid rgba(255,255,255,0.07)`,padding:"16px",boxShadow:`0 0 30px ${p.color}18`}}>
+          <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:18,color:p.color,letterSpacing:3,marginBottom:12}}>{p.label}</div>
+          {[{l:"Avg pts/day",v:avgPts},{l:"Best day",v:`${bestPts} pts`},{l:"Days logged",v:`${subset.length}/${days.length}`},{l:"Avg score",v:`${avgPct}%`}].map(s=>(
+            <div key={s.l} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid rgba(255,255,255,0.04)",fontSize:11}}>
+              <span style={{color:"rgba(255,255,255,0.35)"}}>{s.l}</span>
+              <span style={{fontWeight:700,color:p.color}}>{s.v}</span>
+            </div>
+          ))}
+        </div>
+      );
+    })}
+  </div>
+</div>
+```
+
+);
+}
+
+// ─── SETUP SCREEN ─────────────────────────────────────────────────────────────
+
+function SetupScreen({ onLoad, onDemo }) {
+const [urlH, setUrlH] = useState(()=>localStorage.getItem(“fitfam_url_h”)||””);
+const [urlW, setUrlW] = useState(()=>localStorage.getItem(“fitfam_url_w”)||””);
+const [loading, setLoading] = useState(false);
+const [err, setErr] = useState(””);
+
+async function handle() {
+if (!urlH||!urlW) { setErr(“Please enter both CSV URLs.”); return; }
+setLoading(true); setErr(””);
+try {
+const [tH,tW] = await Promise.all([
+fetch(urlH+(urlH.includes(”?”)?”&”:”?”)+”*=”+Date.now()).then(r=>r.text()),
+fetch(urlW+(urlW.includes(”?”)?”&”:”?”)+”*=”+Date.now()).then(r=>r.text()),
+]);
+localStorage.setItem(“fitfam_url_h”,urlH);
+localStorage.setItem(“fitfam_url_w”,urlW);
+onLoad(parseCSV(tH), parseCSV(tW));
+} catch(e) { setErr(“Failed to fetch: “+e.message); }
+setLoading(false);
+}
+
+const inp = { background:“rgba(255,255,255,0.04)”, border:“1px solid rgba(255,255,255,0.12)”, color:”#e8e8f8”, fontFamily:”‘DM Mono’,monospace”, fontSize:11, padding:“10px 12px”, outline:“none”, width:“100%”, boxSizing:“border-box” };
+
+return (
+<div style={{maxWidth:600,margin:“0 auto”,padding:“40px 16px”}}>
+<div style={{border:“1px solid rgba(255,209,102,0.4)”,background:“rgba(255,209,102,0.04)”,padding:“24px”}}>
+<div style={{fontFamily:”‘Syne’,sans-serif”,fontSize:14,color:”#ffd166”,marginBottom:20,letterSpacing:1}}>⚙ ONE-TIME SETUP — Connect Your Google Sheet</div>
+<div style={{marginBottom:12}}>
+<div style={{fontSize:9,letterSpacing:3,color:“rgba(255,255,255,0.3)”,textTransform:“uppercase”,marginBottom:6}}>Sheet 2 — Anuj CSV URL</div>
+<input style={inp} value={urlH} onChange={e=>setUrlH(e.target.value)} placeholder=“https://docs.google.com/spreadsheets/…/export?format=csv&gid=…”/>
+</div>
+<div style={{marginBottom:16}}>
+<div style={{fontSize:9,letterSpacing:3,color:“rgba(255,255,255,0.3)”,textTransform:“uppercase”,marginBottom:6}}>Sheet 3 — Manisha CSV URL</div>
+<input style={inp} value={urlW} onChange={e=>setUrlW(e.target.value)} placeholder=“https://docs.google.com/spreadsheets/…/export?format=csv&gid=…”/>
+</div>
+<div style={{display:“flex”,gap:10}}>
+<button onClick={handle} disabled={loading} style={{padding:“10px 20px”,background:”#ff5e1a”,color:”#000”,border:“none”,fontFamily:”‘DM Mono’,monospace”,fontSize:11,fontWeight:700,cursor:“pointer”,letterSpacing:1,textTransform:“uppercase”}}>{loading?“LOADING…”:“LOAD DASHBOARD”}</button>
+<button onClick={onDemo} style={{padding:“10px 20px”,background:“transparent”,border:“1px solid rgba(255,255,255,0.2)”,color:“rgba(255,255,255,0.5)”,fontFamily:”‘DM Mono’,monospace”,fontSize:11,cursor:“pointer”,letterSpacing:1,textTransform:“uppercase”}}>TRY DEMO</button>
+</div>
+{err&&<div style={{marginTop:10,color:”#ff4d6d”,fontSize:11}}>{err}</div>}
+<div style={{marginTop:18,fontSize:10,color:“rgba(255,255,255,0.25)”,lineHeight:2,borderLeft:“2px solid rgba(255,255,255,0.08)”,paddingLeft:12}}>
+<strong style={{color:“rgba(255,255,255,0.4)”}}>How to get your CSV URLs:</strong><br/>
+1. Open Google Sheet → File → Share → Publish to web<br/>
+2. Choose Sheet 2 → Comma-separated values (.csv) → Publish → copy link<br/>
+3. Repeat for Sheet 3 (Manisha)<br/><br/>
+<strong style={{color:“rgba(255,255,255,0.4)”}}>Column order must be exactly:</strong><br/>
+<span style={{color:“rgba(255,94,26,0.7)”}}>Husband:</span> Date | Steps | Water_L | Boiled_Water | Gym | Protein_Shake | Market_Food | Calories | Sleep_Hrs | Weight | Read_Book | Created_Reel | Learned_Skill | No_Phone_Morning | Skincare | Notes<br/>
+<span style={{color:“rgba(179,71,245,0.7)”}}>Wife:</span> Date | Steps | Water_L | Boiled_Water | Gym | Protein_Shake | Almonds | Banana_Shake | Meal1 | Meal2 | Meal3 | Calories | Sleep_Hrs | Weight | Read_Book | Created_Reel | Learned_Skill | No_Phone_Morning | Skincare | Notes
+</div>
+</div>
+</div>
+);
+}
+
+// ─── APP ──────────────────────────────────────────────────────────────────────
+
+const TABS = [“Today”,“Comparison”,“Growth”];
+
+export default function App() {
+const [hData, setHData] = useState([]);
+const [wData, setWData] = useState([]);
+const [loaded, setLoaded] = useState(false);
+const [tab, setTab] = useState(“Today”);
+const [currentDate, setCurrentDate] = useState(””);
+const [lastUpdated, setLastUpdated] = useState(””);
+
+const allDates = useMemo(()=>{
+const s=new Set();
+hData.forEach(r=>s.add(r.date));
+wData.forEach(r=>s.add(r.date));
+return Array.from(s).sort((a,b)=>parseDate(a)-parseDate(b));
+},[hData,wData]);
+
+useEffect(()=>{
+if(allDates.length && !currentDate) setCurrentDate(allDates[allDates.length-1]);
+},[allDates]);
+
+// Auto-load stored URLs
+useEffect(()=>{
+const h=localStorage.getItem(“fitfam_url_h”), w=localStorage.getItem(“fitfam_url_w”);
+if(h&&w) {
+Promise.all([
+fetch(h+”&*=”+Date.now()).then(r=>r.text()),
+fetch(w+”&*=”+Date.now()).then(r=>r.text()),
+]).then(([tH,tW])=>{
+onLoad(parseCSV(tH),parseCSV(tW));
+}).catch(()=>{});
+}
+},[]);
+
+function onLoad(h,w) {
+setHData(h); setWData(w); setLoaded(true);
+setLastUpdated(new Date().toLocaleTimeString());
+}
+
+function onDemo() {
+const {hRows,wRows}=buildDemo();
+setHData(hRows); setWData(wRows); setLoaded(true);
+setLastUpdated(“Demo”);
+}
+
+function changeDay(dir) {
+const idx=allDates.indexOf(currentDate);
+const ni=Math.max(0,Math.min(allDates.length-1,idx+dir));
+setCurrentDate(allDates[ni]);
+}
+
+const hRow = hData.find(r=>r.date===currentDate)||null;
+const wRow = wData.find(r=>r.date===currentDate)||null;
+const OH=”#ff5e1a”, OW=”#b347f5”;
+
+return (
+<div style={{minHeight:“100vh”,background:“var(–bg)”,color:“var(–text)”,fontFamily:”‘DM Mono’,monospace”,overflowX:“hidden”,position:“relative”}}>
+<style>{`@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=Syne:wght@700;800&display=swap'); :root { --bg:#080810; --surface:#0f0f1a; --border:#1e1e38; --text:#e8e8f8; --muted2:#8888aa; } *{box-sizing:border-box;margin:0;padding:0;} body{background:var(--bg);} button{font-family:inherit;} ::-webkit-scrollbar{width:4px;height:4px;} ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:2px;} @keyframes shimmer{0%{background-position:200%}100%{background-position:-200%}} @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}`}</style>
+
+```
+  {/* Grid bg */}
+  <div style={{position:"fixed",inset:0,backgroundImage:"linear-gradient(rgba(255,94,26,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,94,26,0.03) 1px,transparent 1px)",backgroundSize:"48px 48px",pointerEvents:"none",zIndex:0}}/>
+  <div style={{position:"fixed",width:500,height:500,borderRadius:"50%",background:"rgba(255,94,26,0.06)",filter:"blur(120px)",top:-100,left:-100,pointerEvents:"none",zIndex:0}}/>
+  <div style={{position:"fixed",width:500,height:500,borderRadius:"50%",background:"rgba(179,71,245,0.06)",filter:"blur(120px)",bottom:-100,right:-100,pointerEvents:"none",zIndex:0}}/>
+
+  {/* Header */}
+  <div style={{position:"sticky",top:0,zIndex:20,background:"rgba(8,8,16,0.94)",backdropFilter:"blur(20px)",borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
+    <div style={{maxWidth:900,margin:"0 auto",padding:"16px 16px 0"}}>
+      <div style={{textAlign:"center",marginBottom:12}}>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"clamp(2.5rem,10vw,5rem)",letterSpacing:8,background:"linear-gradient(135deg,#ff5e1a 0%,#ff9500 40%,#b347f5 100%)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",lineHeight:1}}>FITFAM</div>
+        <div style={{fontSize:9,letterSpacing:5,color:"rgba(255,255,255,0.25)",textTransform:"uppercase",marginTop:2}}>Daily Health & Habit Tracker</div>
+        {loaded&&<div style={{display:"flex",justifyContent:"center",gap:12,marginTop:8,flexWrap:"wrap"}}>
+          <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"3px 10px",border:"1px solid rgba(57,217,138,0.3)",color:"#39d98a",fontSize:9,letterSpacing:2,textTransform:"uppercase"}}>
+            <span style={{width:5,height:5,borderRadius:"50%",background:"#39d98a",animation:"fadeUp 2s infinite"}}/>LIVE
+          </span>
+          <span style={{padding:"3px 10px",border:"1px solid rgba(255,255,255,0.1)",color:"rgba(255,255,255,0.3)",fontSize:9,letterSpacing:2,textTransform:"uppercase"}}>Updated: {lastUpdated}</span>
+          <span style={{padding:"3px 10px",border:"1px solid rgba(255,255,255,0.1)",color:"rgba(255,255,255,0.3)",fontSize:9,letterSpacing:2,textTransform:"uppercase"}}>{allDates.length} days logged</span>
+        </div>}
+      </div>
+      <div style={{display:"flex",gap:0,borderTop:"1px solid rgba(255,255,255,0.05)"}}>
+        {TABS.map(t=>(
+          <button key={t} onClick={()=>setTab(t)} style={{
+            flex:1,padding:"10px 4px",fontSize:11,fontWeight:700,cursor:"pointer",
+            background:"transparent",border:"none",letterSpacing:2,textTransform:"uppercase",
+            color:tab===t?"#fff":"rgba(255,255,255,0.3)",
+            borderBottom:`2px solid ${tab===t?"#ff5e1a":"transparent"}`,transition:"all 0.18s",
+          }}>{t}</button>
+        ))}
+      </div>
+    </div>
+  </div>
+
+  {/* Body */}
+  <div style={{maxWidth:900,margin:"0 auto",padding:"24px 16px 60px",position:"relative",zIndex:1}}>
+    {!loaded ? (
+      <SetupScreen onLoad={onLoad} onDemo={onDemo}/>
+    ) : tab==="Today" ? (
+      <>
+        {/* Date nav */}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,marginBottom:24}}>
+          <button onClick={()=>changeDay(-1)} style={{width:38,height:38,background:"var(--surface)",border:"1px solid rgba(255,255,255,0.1)",color:"#fff",fontSize:18,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.2s"}}>‹</button>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"clamp(1rem,4vw,1.4rem)",letterSpacing:3}}>{fmtDisplay(currentDate)}</div>
+            {currentDate===allDates[allDates.length-1]&&<div style={{fontSize:9,color:"#39d98a",letterSpacing:3,textTransform:"uppercase",marginTop:2}}>● LATEST</div>}
+          </div>
+          <button onClick={()=>changeDay(1)} disabled={currentDate===allDates[allDates.length-1]} style={{width:38,height:38,background:"var(--surface)",border:"1px solid rgba(255,255,255,0.1)",color:currentDate===allDates[allDates.length-1]?"rgba(255,255,255,0.15)":"#fff",fontSize:18,cursor:currentDate===allDates[allDates.length-1]?"default":"pointer",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.2s"}}>›</button>
+        </div>
+
+        {/* 7-day mini history */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:6,marginBottom:24}}>
+          {allDates.slice(-7).map(k=>{
+            const hs=calcScore(hData.find(r=>r.date===k)||null,HUSBAND_GAINS,HUSBAND_LOSSES);
+            const ws=calcScore(wData.find(r=>r.date===k)||null,WIFE_GAINS,WIFE_LOSSES);
+            const isActive=k===currentDate;
+            return (
+              <div key={k} onClick={()=>setCurrentDate(k)} style={{background:"var(--surface)",border:`1px solid ${isActive?"#ff5e1a":"rgba(255,255,255,0.06)"}`,padding:"8px 4px",textAlign:"center",cursor:"pointer",transition:"all 0.2s",boxShadow:isActive?"0 0 20px rgba(255,94,26,0.2)":"none"}}>
+                <div style={{fontSize:9,color:"rgba(255,255,255,0.3)",textTransform:"uppercase",letterSpacing:1}}>{fmtDay(k)}</div>
+                <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,letterSpacing:1,margin:"2px 0"}}>{new Date(parseDate(k)).getDate()}</div>
+                <div style={{display:"flex",justifyContent:"center",gap:3,marginBottom:2}}>
+                  <div style={{width:5,height:5,borderRadius:"50%",background:hs>0?OH:"rgba(255,255,255,0.1)"}}/>
+                  <div style={{width:5,height:5,borderRadius:"50%",background:ws>0?OW:"rgba(255,255,255,0.1)"}}/>
+                </div>
+                <div style={{fontSize:8,color:"rgba(255,255,255,0.25)"}}>{hs}/{ws}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Person cards */}
+        <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+          <PersonCard who="husband" row={hRow}/>
+          <PersonCard who="wife" row={wRow}/>
+        </div>
+      </>
+    ) : tab==="Comparison" ? (
+      <ComparisonTab hData={hData} wData={wData} allDates={allDates} currentDate={currentDate}/>
+    ) : (
+      <GrowthTab hData={hData} wData={wData} allDates={allDates}/>
+    )}
+  </div>
+
+  {/* Footer */}
+  <div style={{textAlign:"center",padding:"16px",color:"rgba(255,255,255,0.15)",fontSize:9,letterSpacing:3,textTransform:"uppercase",borderTop:"1px solid rgba(255,255,255,0.05)",position:"relative",zIndex:1}}>
+    FitFam Dashboard · Auto-refreshes on page load · Built with ❤ · Data lives in Google Sheets
+  </div>
+</div>
+```
+
+);
+}
